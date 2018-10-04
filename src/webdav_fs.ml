@@ -37,9 +37,7 @@ sig
 
   val size : t -> file -> (int64, error) result Lwt.t
 
-  val read : t -> file -> (Cstruct.t * Properties.t, error) result Lwt.t
-
-  val stat : t -> file_or_dir -> (Mirage_fs.stat, error) result Lwt.t
+  val read : t -> file -> (string * Properties.t, error) result Lwt.t
 
   val exists : t -> string -> bool Lwt.t
 
@@ -49,24 +47,26 @@ sig
 
   val mkdir : t -> dir -> Properties.t -> (unit, write_error) result Lwt.t
 
-  val write : t -> file -> Cstruct.t -> Properties.t -> (unit, write_error) result Lwt.t
+  val write : t -> file -> string -> Properties.t -> (unit, write_error) result Lwt.t
 
-  val destroy : ?recursive:bool -> t -> file_or_dir -> (unit, write_error) result Lwt.t
+  val destroy : t -> file_or_dir -> (unit, write_error) result Lwt.t
 
   val pp_error : error Fmt.t
 
   val pp_write_error : write_error Fmt.t
 end
 
-module Make (Fs:Mirage_fs_lwt.S) = struct
+module Make (Fs:Irmin.KV with type contents = string) = struct
 
   open Lwt.Infix
 
   module Xml = Webdav_xml
 
   type t = Fs.t
-  type error = Fs.error
-  type write_error = Fs.write_error
+  type error = unit
+  type write_error = unit
+  let pp_error _ _ = ()
+  let pp_write_error _ _ = ()
 
   let (>>==) a f = a >>= function
     | Error e -> Lwt.return (Error e)
@@ -77,8 +77,10 @@ module Make (Fs:Mirage_fs_lwt.S) = struct
     | Ok res  -> f res
 
   let isdir fs name =
-    Fs.stat fs name >>|= fun stat ->
-    Ok stat.Mirage_fs.directory
+    Fs.kind fs name >|= function
+    | None -> Error ()
+    | Some `Contents -> Ok false
+    | Some `Node -> Ok true
 
   let basename = function
     | `File path | `Dir path ->
@@ -97,8 +99,9 @@ module Make (Fs:Mirage_fs_lwt.S) = struct
   let file_from_string str = `File (data str)
 
   let from_string fs str =
-    isdir fs str >>|= fun dir ->
-    Ok (if dir then `Dir (data str) else `File (data str))
+    let key = data str in
+    isdir fs key >>|= fun dir ->
+    Ok (if dir then `Dir key else `File key)
 
   let to_string =
     let a = Astring.String.concat ~sep:"/" in
@@ -119,16 +122,23 @@ module Make (Fs:Mirage_fs_lwt.S) = struct
   let propfilename =
     let ext = ".prop.xml" in
     function
-    | `Dir data -> `File (data @ [ ext ])
+    | `Dir data -> data @ [ ext ]
     | `File data -> match List.rev data with
-      | filename :: path -> `File (List.rev path @ [ filename ^ ext ])
+      | filename :: path -> List.rev path @ [ filename ^ ext ]
       | [] -> assert false (* no file without a name *)
 
   let get_properties fs f_or_d =
-    let propfile = to_string (propfilename f_or_d) in
-    Fs.size fs propfile >>== fun size ->
-    Fs.read fs propfile 0 (Int64.to_int size)
+    let propfile = propfilename f_or_d in
+    Fs.find fs propfile >|= function
+    | None -> Error ()
+    | Some data -> Ok data
 
+  let info () =
+    let date = 0L in
+    let author = "caldav" in
+    let message = "a calendar change" in
+    Irmin.Info.v ~date ~author message
+ 
   (* TODO: check call sites, used to do:
       else match Xml.get_prop "resourcetype" map with
         | Some (_, c) when List.exists (function `Node (_, "collection", _) -> true | _ -> false) c -> name ^ "/"
@@ -140,57 +150,47 @@ module Make (Fs:Mirage_fs_lwt.S) = struct
       | `Dir _ -> Properties.prepare_for_disk map
     in
     let data = Properties.to_string map' in
-    let filename = to_string (propfilename f_or_d) in
-    Printf.printf "writing property map %s: %s\n%!" filename data ;
-    Fs.destroy fs filename >>= fun _ ->
-    Fs.write fs filename 0 (Cstruct.of_string data)
+    let filename = propfilename f_or_d in
+    Printf.printf "writing property map %s: %s\n%!" (String.concat "/" filename) data ;
+    Fs.set ~info fs filename data >|= fun () -> Ok ()
 
   let size fs (`File file) =
-    let name = to_string (`File file) in
-    Fs.size fs name
-
-  let stat fs f_or_d = Fs.stat fs (to_string f_or_d)
+    Fs.find fs file >|= function
+    | None -> Error ()
+    | Some data -> Ok (Int64.of_int @@ String.length data)
 
   let exists fs str =
-    Fs.stat fs str >|= function
-    | Ok _ -> true
-    | Error _ -> false
+    let file = data str in
+    Fs.mem fs file
 
   let dir_exists fs (`Dir dir) =
-    Fs.stat fs (to_string (`Dir dir)) >|= function
-    | Ok s when s.Mirage_fs.directory -> true
-    | _ -> false
+    Fs.kind fs dir >|= function
+    | None -> false
+    | Some `Contents -> false
+    | Some `Node -> true
 
   let listdir fs (`Dir dir) =
-    let dir_string = to_string (`Dir dir) in
-    Fs.listdir fs dir_string >>== fun files ->
-    Lwt_list.fold_left_s (fun acc fn ->
-        if Astring.String.is_suffix ~affix:".prop.xml" fn then
-          Lwt.return acc
+    Fs.list fs dir >|= fun files ->
+    let files = List.fold_left (fun acc (step, kind) ->
+        if Astring.String.is_suffix ~affix:".prop.xml" step then
+          acc
         else
-          let str = dir_string ^ fn in
-          isdir fs str >|= function
-          | Error _ -> acc
-          | Ok is_dir ->
-            let f_or_d =
-              if is_dir
-              then dir_from_string str
-              else file_from_string str
-            in
-            f_or_d :: acc)
-      [] files >|= fun files ->
+          let file = dir @ [step] in
+          match kind with
+          | `Contents -> `File file :: acc
+          | `Node -> `Dir file :: acc)
+      [] files in
     Ok files
 
   let get_raw_property_map fs f_or_d =
     get_properties fs f_or_d >|= function
     | Error e ->
-      Format.printf "error while getting properties for %s %a\n%!" (to_string f_or_d) Fs.pp_error e ;
+      Format.printf "error while getting properties for %s %a\n%!" (to_string f_or_d) pp_error e ;
       None
     | Ok data ->
-      let str = Cstruct.(to_string @@ concat data) in
-      match Xml.string_to_tree str with
+      match Xml.string_to_tree data with
       | None ->
-        Printf.printf "couldn't convert %s to xml tree\n%!" str ;
+        Printf.printf "couldn't convert %s to xml tree\n%!" data ;
         None
       | Some t -> Some (Properties.from_tree t)
 
@@ -285,48 +285,27 @@ module Make (Fs:Mirage_fs_lwt.S) = struct
           (Properties.unsafe_add (Xml.dav_ns, "getetag") ([], [ Xml.pcdata etag ]) map)
 
   let read fs (`File file) =
-    let name = to_string (`File file) in
-    Fs.size fs name >>== fun length ->
-    Fs.read fs name 0 (Int64.to_int length) >>== fun data ->
-    get_property_map fs (`File file) >|= fun props ->
-    Ok (Cstruct.concat data, props)
+    Fs.find fs file >>= function
+    | None -> Lwt.return (Error ())
+    | Some data -> 
+      get_property_map fs (`File file) >|= fun props ->
+      Ok (data, props)
 
   let mkdir fs (`Dir dir) propmap =
-    Fs.mkdir fs (to_string (`Dir dir)) >>== fun () ->
     write_property_map fs (`Dir dir) propmap
 
   let write fs (`File file) data propmap =
-    let filename = to_string (`File file) in
-    Fs.destroy fs filename >>= fun _ ->
-    Fs.write fs filename 0 data >>== fun () ->
+    Fs.set ~info fs file data >>= fun () ->
     write_property_map fs (`File file) propmap
 
   let destroy_file_or_empty_dir fs f_or_d =
     let propfile = propfilename f_or_d in
-    Fs.destroy fs (to_string propfile) >>== fun () ->
-    Fs.destroy fs (to_string f_or_d)
+    Fs.remove ~info fs propfile >>= fun () ->
+    let file = match f_or_d with
+    | `File file | `Dir file -> file in
+    Fs.remove ~info fs file >|= fun () -> Ok ()
 
-  (* TODO maybe push the recursive remove to FS *)
-  let rec destroy ?(recursive = false) fs f_or_d =
-    (if recursive then
-       match f_or_d with
-       | `File _ -> Lwt.return @@ Ok ()
-       | `Dir d ->
-         listdir fs (`Dir d) >>= function
-         | Error `Is_a_directory -> Lwt.return @@ Error `Is_a_directory
-         | Error `No_directory_entry -> Lwt.return @@ Error `No_directory_entry
-         | Error `Not_a_directory -> Lwt.return @@ Error `Not_a_directory
-         | Error _ -> assert false
-         | Ok f_or_ds ->
-           Lwt_list.fold_left_s (fun result f_or_d ->
-               match result with
-               | Error e -> Lwt.return @@ Error e
-               | Ok () -> destroy ~recursive fs f_or_d) (Ok ()) f_or_ds
-     else Lwt.return @@ Ok ()) >>= function
-    | Error e -> Lwt.return @@ Error e
-    | Ok () -> destroy_file_or_empty_dir fs f_or_d
-
-  let pp_error = Fs.pp_error
-  let pp_write_error = Fs.pp_write_error
+  let destroy fs f_or_d =
+    destroy_file_or_empty_dir fs f_or_d
 
 end

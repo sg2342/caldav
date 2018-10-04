@@ -2,18 +2,22 @@ open Cohttp_lwt_unix
 open Lwt.Infix
 open Caldav.Webdav_config
 
-module Fs = Caldav.Webdav_fs.Make(FS_unix)
+module Store = Irmin_mem.KV(Irmin.Contents.String)
+module Fs = Caldav.Webdav_fs.Make(Store)
 module Xml = Caldav.Webdav_xml
 module Dav = Caldav.Webdav_api.Make(Fs)
 module Properties = Caldav.Properties
 module Privileges = Caldav.Privileges
 type file_or_dir = Caldav.Webdav_fs.file_or_dir
 
-module Wm = struct
-  module Rd = Webmachine.Rd
-  include Webmachine.Make(Cohttp_lwt_unix__Io)
-end
 
+module Wm = struct
+  module Clock = struct
+    let now = fun () -> int_of_float (Unix.gettimeofday ())
+  end
+  module Rd = Webmachine.Rd
+  include Webmachine.Make(Cohttp_lwt_unix__Io)(Clock)
+end
 open Wm.Rd
 
 let now = Ptime_clock.now
@@ -454,7 +458,8 @@ let main () =
     ]
   } in
   (* create the file system *)
-  FS_unix.connect "/tmp/calendar" >>= fun fs ->
+  Store.Repo.v (Irmin_mem.config ()) >>= fun repo -> Store.master repo
+  >>= fun fs ->
   (* only for apple test suite *)
   (* initialize_fs_for_apple_testsuite fs now config >>= fun () -> *)
   Dav.initialize_fs fs now config >>= fun () ->

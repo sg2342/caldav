@@ -110,7 +110,7 @@ module Make(Fs: Webdav_fs.S) = struct
           let props = Properties.create ~content_type ~etag
               acl timestamp (String.length ics) (Fs.to_string file')
           in
-          Fs.write fs file (Cstruct.of_string ics) props >|= function
+          Fs.write fs file ics props >|= function
           | Error e -> Error `Internal_server_error
           | Ok () -> Ok etag
 
@@ -160,7 +160,7 @@ module Make(Fs: Webdav_fs.S) = struct
         Fs.read fs (`File f) >|= function
         | Error e -> Log.err (fun m -> m "error %a while reading file" Fs.pp_error e) ; []
         | Ok (data, _props) ->
-          match Icalendar.parse (Cstruct.to_string data) with
+          match Icalendar.parse data with
           | Error e -> Log.err (fun m -> m "error %s while parsing ics" e ); []
           | Ok calendar -> snd calendar
     in
@@ -203,7 +203,7 @@ module Make(Fs: Webdav_fs.S) = struct
       let ct = match Properties.unsafe_find (Xml.dav_ns, "getcontenttype") props with
         | Some (_, [ Xml.Pcdata ct ]) -> ct
         | _ -> "text/calendar" in
-      Ok (ct, Cstruct.to_string data)
+      Ok (ct, data)
 
 
   let delete fs ~path now =
@@ -835,9 +835,9 @@ module Make(Fs: Webdav_fs.S) = struct
                   Xml.dav_node "status" [ Xml.pcdata (statuscode_to_string `Forbidden) ] ]
             in
             Ok (Some node)
-          else match Icalendar.parse (Cstruct.to_string data) with
+          else match Icalendar.parse data with
             | Error e ->
-              Printf.printf "Error %s while parsing %s\n" e (Cstruct.to_string data);
+              Printf.printf "Error %s while parsing %s\n" e data;
               Error `Bad_request
             | Ok ics ->
               match apply_to_vcalendar query ics props ~auth_user_props with
@@ -893,9 +893,9 @@ module Make(Fs: Webdav_fs.S) = struct
           in
           Ok node
         else
-          match Icalendar.parse (Cstruct.to_string data) with
+          match Icalendar.parse data with
           | Error e ->
-            Printf.printf "Error %s while parsing %s\n" e (Cstruct.to_string data);
+            Printf.printf "Error %s while parsing %s\n" e data;
             Error `Bad_request
           | Ok ics ->
             let xs = apply_transformation transformation ics props ~auth_user_props in
@@ -1143,9 +1143,9 @@ let delete_group_memberships fs principal_dir =
   Lwt_list.iter_p (resign fs principal_dir "group-member-set") groups
 
 let delete_home_and_calendars fs principal_dir user_calendar_dir =
-  Fs.destroy ~recursive:true fs principal_dir >>= function
+  Fs.destroy fs principal_dir >>= function
   | Error e -> Lwt.return @@ Error e
-  | Ok () -> Fs.destroy ~recursive:true fs user_calendar_dir
+  | Ok () -> Fs.destroy fs user_calendar_dir
 
 let delete_user fs config name =
   let principal_dir = `Dir [config.principals ; name] in
