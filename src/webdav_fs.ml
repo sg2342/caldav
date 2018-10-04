@@ -161,7 +161,10 @@ module Make (Fs:Irmin.KV with type contents = string) = struct
 
   let exists fs str =
     let file = data str in
-    Fs.mem fs file
+    Fs.kind fs file >|= function
+    | None -> false
+    | Some _ -> true
+    (*Fs.mem fs file*)
 
   let dir_exists fs (`Dir dir) =
     Fs.kind fs dir >|= function
