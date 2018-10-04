@@ -2,7 +2,7 @@ open Cohttp_lwt_unix
 open Lwt.Infix
 open Caldav.Webdav_config
 
-module Store = Irmin_unix.FS.KV(Irmin.Contents.String)
+module Store = Irmin_unix.Git.FS.KV(Irmin.Contents.String)
 module Fs = Caldav.Webdav_fs.Make(Store)
 module Xml = Caldav.Webdav_xml
 module Dav = Caldav.Webdav_api.Make(Fs)
