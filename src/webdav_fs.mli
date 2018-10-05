@@ -57,4 +57,4 @@ sig
   val pp_write_error : write_error Fmt.t
 end
 
-module Make (Fs: Irmin.KV with type contents = string) : S with type t = Fs.t 
+module Make (Fs: Mirage_kv_lwt_new.RW) : S with type t = Fs.t 
