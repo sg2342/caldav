@@ -77,10 +77,10 @@ module Make (Fs:Mirage_kv_lwt_new.RW) = struct
     | Ok res  -> f res
 
   let isdir fs name =
-    Fs.kind fs name >|= function
+    Fs.exists fs name >|= function
     | None -> Error ()
-    | Some `Contents -> Ok false
-    | Some `Node -> Ok true
+    | Some `Value -> Ok false
+    | Some `Dictionary -> Ok true
 
   let basename = function
     | `File path | `Dir path ->
@@ -92,7 +92,8 @@ module Make (Fs:Mirage_kv_lwt_new.RW) = struct
     `File (data @ [name])
 
   (* TODO: no handling of .. done here yet *)
-  let data str = Astring.String.cuts ~empty:false ~sep:"/" str
+  (*let data str = Astring.String.cuts ~empty:false ~sep:"/" str*)
+  let data str = Mirage_kv_new.Key.v str
 
   let dir_from_string str = `Dir (data str)
 
@@ -119,19 +120,20 @@ module Make (Fs:Mirage_kv_lwt_new.RW) = struct
     | `Dir d -> parent d
     | `File f -> parent f
 
-  let propfilename =
+  let propfilename f_or_d =
     let ext = ".prop.xml" in
-    function
+    let segments = match f_or_d with
     | `Dir data -> data @ [ ext ]
     | `File data -> match List.rev data with
       | filename :: path -> List.rev path @ [ filename ^ ext ]
-      | [] -> assert false (* no file without a name *)
+      | [] -> assert false (* no file without a name *) in
+    Mirage_kv_new.Key.v (List.fold_left (fun a b -> a ^ b) "" segments)
 
   let get_properties fs f_or_d =
     let propfile = propfilename f_or_d in
-    Fs.find fs propfile >|= function
-    | None -> Error ()
-    | Some data -> Ok data
+    Fs.get fs propfile >|= function
+    | Error _ -> Error ()
+    | Ok data -> Ok data
 
   let info () =
     let date = 0L in
