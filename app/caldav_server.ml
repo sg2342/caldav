@@ -2,7 +2,8 @@ open Cohttp_lwt_unix
 open Lwt.Infix
 open Caldav.Webdav_config
 
-module Store = Irmin_unix.Git.FS.KV(Irmin.Contents.String)
+module G = Irmin_git.Mem
+module Store = Irmin_mirage.Git.KV_RW(G)(Pclock)
 module Fs = Caldav.Webdav_fs.Make(Store)
 module Xml = Caldav.Webdav_xml
 module Dav = Caldav.Webdav_api.Make(Fs)
@@ -10,6 +11,7 @@ module Properties = Caldav.Properties
 module Privileges = Caldav.Privileges
 type file_or_dir = Caldav.Webdav_fs.file_or_dir
 
+module Conduit_mirage_tcp = Conduit_mirage.With_tcp(Tcpip_stack_socket)
 
 module Wm = struct
   module Clock = struct
@@ -458,8 +460,17 @@ let main () =
     ]
   } in
   (* create the file system *)
-  Store.Repo.v (Irmin_git.config "/tmp/git") >>= fun repo -> Store.master repo
-  >>= fun fs ->
+  G.v (Fpath.v "bla") >>= function
+  | Error _ -> assert false
+  | Ok git ->
+    Udpv4_socket.connect None >>= fun udp ->
+    Tcpv4_socket.connect None >>= fun tcp ->
+    Tcpip_stack_socket.connect [] udp tcp >>= fun stack ->
+    Conduit_mirage_tcp.connect stack Conduit_mirage.empty >>= fun conduit' ->
+    Conduit_mirage.with_tls conduit' >>= fun conduit ->
+    let resolver = Resolver_lwt_unix.system in
+    Store.connect git ~conduit ~author:"caldav" ~resolver ~msg:(fun _ -> "a calendar change") ()
+      "https://github.com/roburio/testcalendar.git" >>= fun fs ->
   (* only for apple test suite *)
   (* initialize_fs_for_apple_testsuite fs now config >>= fun () -> *)
   Dav.initialize_fs fs now config >>= fun () ->

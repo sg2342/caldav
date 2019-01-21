@@ -1175,7 +1175,7 @@ let enroll fs to_include principal =
   Log.debug (fun m -> m "enrolling %a to principal %s" Xml.pp_tree to_include principal) ;
   let principal_dir = Uri.path @@ Uri.of_string principal in
   Fs.from_string fs principal_dir >>= function
-  | Error err -> Log.err (fun m -> m "from_string failed for %s" principal_dir) ; assert false
+  | Error err -> Log.err (fun m -> m "from_string failed with %a for %s" Fs.pp_error err principal_dir) ; assert false
   | Ok f_or_d ->
     Fs.get_property_map fs f_or_d >>= fun principal_props ->
     let memberships =

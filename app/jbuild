@@ -1,6 +1,6 @@
 (executables
  ((names (caldav_server))
-  (libraries (checkseum.c digestif.c irmin-unix logs logs.fmt caldav webmachine nocrypto lwt ptime ptime.clock.os cohttp-lwt-unix mirage-fs-unix rresult))))
+  (libraries (checkseum.ocaml digestif.ocaml irmin-unix logs logs.fmt caldav webmachine nocrypto lwt ptime ptime.clock.os cohttp-lwt-unix mirage-kv-lwt rresult mirage-clock-unix irmin-mirage io-page-unix mirage-conduit tcpip tcpip.stack-socket))))
 
 (install
  ((section bin)

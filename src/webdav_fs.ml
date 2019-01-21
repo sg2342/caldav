@@ -56,17 +56,17 @@ sig
   val pp_write_error : write_error Fmt.t
 end
 
-module Make (Fs:Mirage_kv_lwt_new.RW) = struct
+module Make (Fs:Mirage_kv_lwt.RW) = struct
 
   open Lwt.Infix
 
   module Xml = Webdav_xml
 
   type t = Fs.t
-  type error = unit
-  type write_error = unit
-  let pp_error _ _ = ()
-  let pp_write_error _ _ = ()
+  type error = Fs.error
+  type write_error = Fs.write_error
+  let pp_error = Fs.pp_error
+  let pp_write_error = Fs.pp_write_error
 
   let (>>==) a f = a >>= function
     | Error e -> Lwt.return (Error e)
@@ -75,12 +75,6 @@ module Make (Fs:Mirage_kv_lwt_new.RW) = struct
   let (>>|=) a f = a >|= function
     | Error e -> Error e
     | Ok res  -> f res
-
-  let isdir fs name =
-    Fs.exists fs name >|= function
-    | None -> Error ()
-    | Some `Value -> Ok false
-    | Some `Dictionary -> Ok true
 
   let basename = function
     | `File path | `Dir path ->
@@ -92,23 +86,32 @@ module Make (Fs:Mirage_kv_lwt_new.RW) = struct
     `File (data @ [name])
 
   (* TODO: no handling of .. done here yet *)
-  (*let data str = Astring.String.cuts ~empty:false ~sep:"/" str*)
-  let data str = Mirage_kv_new.Key.v str
+  let data_to_list str = Astring.String.cuts ~empty:false ~sep:"/" str
+  let data str = Mirage_kv.Key.v str
 
-  let dir_from_string str = `Dir (data str)
+  let dir_from_string str = `Dir (data_to_list str)
 
-  let file_from_string str = `File (data str)
-
-  let from_string fs str =
-    let key = data str in
-    isdir fs key >>|= fun dir ->
-    Ok (if dir then `Dir key else `File key)
+  let file_from_string str = `File (data_to_list str)
 
   let to_string =
     let a = Astring.String.concat ~sep:"/" in
     function
     | `File data -> a data
     | `Dir data -> a data ^ "/"
+
+  let isdir fs name =
+    (* TODO `File is wrong here, we're here to figure out whether it is a file or directory *)
+    let key = data @@ to_string (`File name) in
+    Fs.exists fs key >|= function
+    | Ok None -> Error (`Not_found key)
+    | Ok (Some `Value) -> Ok false
+    | Ok (Some `Dictionary) -> Ok true
+    | Error e -> Error e
+
+  let from_string fs str =
+    let key = data_to_list str in
+    isdir fs key >>|= fun dir ->
+    Ok (if dir then `Dir key else `File key)
 
   let parent f_or_d =
     let parent p =
@@ -127,20 +130,12 @@ module Make (Fs:Mirage_kv_lwt_new.RW) = struct
     | `File data -> match List.rev data with
       | filename :: path -> List.rev path @ [ filename ^ ext ]
       | [] -> assert false (* no file without a name *) in
-    Mirage_kv_new.Key.v (List.fold_left (fun a b -> a ^ b) "" segments)
+    List.fold_left Mirage_kv.Key.add Mirage_kv.Key.empty segments
 
   let get_properties fs f_or_d =
     let propfile = propfilename f_or_d in
-    Fs.get fs propfile >|= function
-    | Error _ -> Error ()
-    | Ok data -> Ok data
+    Fs.get fs propfile
 
-  let info () =
-    let date = 0L in
-    let author = "caldav" in
-    let message = "a calendar change" in
-    Irmin.Info.v ~date ~author message
- 
   (* TODO: check call sites, used to do:
       else match Xml.get_prop "resourcetype" map with
         | Some (_, c) when List.exists (function `Node (_, "collection", _) -> true | _ -> false) c -> name ^ "/"
@@ -153,39 +148,47 @@ module Make (Fs:Mirage_kv_lwt_new.RW) = struct
     in
     let data = Properties.to_string map' in
     let filename = propfilename f_or_d in
-    Printf.printf "writing property map %s: %s\n%!" (String.concat "/" filename) data ;
-    Fs.set ~info fs filename data >|= fun () -> Ok ()
+    Printf.printf "writing property map %s: %s\n%!" (Mirage_kv.Key.to_string filename) data ;
+    Fs.set fs filename data
 
   let size fs (`File file) =
-    Fs.find fs file >|= function
-    | None -> Error ()
-    | Some data -> Ok (Int64.of_int @@ String.length data)
+    let key = data @@ to_string (`File file) in
+    Fs.get fs key >|= function
+    | Error e -> Error e
+    | Ok data -> Ok (Int64.of_int @@ String.length data)
 
   let exists fs str =
     let file = data str in
-    Fs.kind fs file >|= function
-    | None -> false
-    | Some _ -> true
+    Fs.exists fs file >|= function
+    | Error e -> (* Error e *) false
+    | Ok None -> false
+    | Ok (Some _) -> true
     (*Fs.mem fs file*)
 
   let dir_exists fs (`Dir dir) =
-    Fs.kind fs dir >|= function
-    | None -> false
-    | Some `Contents -> false
-    | Some `Node -> true
+    let key = data @@ to_string (`Dir dir) in
+    Fs.exists fs key >|= function
+    | Error e -> (* Error e *) false
+    | Ok None -> false
+    | Ok (Some `Value) -> false
+    | Ok (Some `Dictionary) -> true
 
   let listdir fs (`Dir dir) =
-    Fs.list fs dir >|= fun files ->
-    let files = List.fold_left (fun acc (step, kind) ->
-        if Astring.String.is_suffix ~affix:".prop.xml" step then
-          acc
-        else
-          let file = dir @ [step] in
-          match kind with
-          | `Contents -> `File file :: acc
-          | `Node -> `Dir file :: acc)
-      [] files in
-    Ok files
+    let kv_dir = data @@ to_string (`Dir dir) in
+    Fs.list fs kv_dir >|= function
+    | Error e -> Error e
+    | Ok files ->
+      let files = List.fold_left (fun acc (step, kind) ->
+          if Astring.String.is_suffix ~affix:".prop.xml" step then
+            acc
+          else
+            (* TODO check whether step is the entire path, or dir needs to be included *)
+            let file = dir @ [step] in
+            match kind with
+            | `Value -> `File file :: acc
+            | `Dictionary -> `Dir file :: acc)
+          [] files in
+      Ok files
 
   let get_raw_property_map fs f_or_d =
     get_properties fs f_or_d >|= function
@@ -290,25 +293,31 @@ module Make (Fs:Mirage_kv_lwt_new.RW) = struct
           (Properties.unsafe_add (Xml.dav_ns, "getetag") ([], [ Xml.pcdata etag ]) map)
 
   let read fs (`File file) =
-    Fs.find fs file >>= function
-    | None -> Lwt.return (Error ())
-    | Some data -> 
+    let kv_file = data @@ to_string (`File file) in
+    Fs.get fs kv_file >>= function
+    | Error e -> Lwt.return (Error e)
+    | Ok data ->
       get_property_map fs (`File file) >|= fun props ->
       Ok (data, props)
 
   let mkdir fs (`Dir dir) propmap =
     write_property_map fs (`Dir dir) propmap
 
-  let write fs (`File file) data propmap =
-    Fs.set ~info fs file data >>= fun () ->
-    write_property_map fs (`File file) propmap
+  let write fs (`File file) value propmap =
+    let kv_file = data @@ to_string (`File file) in
+    Fs.set fs kv_file value >>= function
+    | Error e -> Lwt.return (Error e)
+    | Ok () -> write_property_map fs (`File file) propmap
 
   let destroy_file_or_empty_dir fs f_or_d =
+    (* TODO could a propfile influence the right to deletion if it gets deleted first? *)
+    (* TODO use Mirage_kv.RW.batch! *)
     let propfile = propfilename f_or_d in
-    Fs.remove ~info fs propfile >>= fun () ->
-    let file = match f_or_d with
-    | `File file | `Dir file -> file in
-    Fs.remove ~info fs file >|= fun () -> Ok ()
+    Fs.remove fs propfile >>= function
+    | Error e -> Lwt.return (Error e)
+    | Ok () ->
+      let file = data @@ to_string f_or_d in
+      Fs.remove fs file
 
   let destroy fs f_or_d =
     destroy_file_or_empty_dir fs f_or_d
