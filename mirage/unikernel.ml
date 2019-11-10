@@ -9,7 +9,7 @@ module Server_log = (val Logs.src_log server_src : Logs.LOG)
 let access_src = Logs.Src.create "http.access" ~doc:"HTTP server access log"
 module Access_log = (val Logs.src_log access_src : Logs.LOG)
 
-module Main (R : Mirage_random.S) (T : Mirage_time.S) (Clock: Mirage_clock.PCLOCK) (Mclock: Mirage_clock.MCLOCK) (Stack : Mirage_stack.V4) (S: HTTP) (Resolver : Resolver_lwt.S) (Conduit : Conduit_mirage.S) (Zap : Mirage_kv.RO) = struct
+module Main (C : Mirage_console.S) (R : Mirage_random.S) (T : Mirage_time.S) (Clock: Mirage_clock.PCLOCK) (Mclock: Mirage_clock.MCLOCK) (Stack : Mirage_stack.V4) (S: HTTP) (Resolver : Resolver_lwt.S) (Conduit : Conduit_mirage.S) (Zap : Mirage_kv.RO) (Management : Mirage_stack.V4) = struct
   module Store = Irmin_mirage_git.KV_RW(Irmin_git.Mem)(Clock)
   module Dav_fs = Caldav.Webdav_fs.Make(Store)
   module Dav = Caldav.Webdav_api.Make(R)(Clock)(Dav_fs)
@@ -50,9 +50,24 @@ module Main (R : Mirage_random.S) (T : Mirage_time.S) (Clock: Mirage_clock.PCLOC
     S.make ~conn_closed ~callback ()
 
   module D = Dns_certify_mirage.Make(R)(Clock)(T)(Stack)
+  module Monitoring = Monitoring_experiments.Make(T)(Management)
+  module Syslog = Logs_syslog_mirage.Udp(C)(Clock)(Management)
 
-  let start _random _time _clock _mclock stack http resolver conduit zap =
-    let hostname = Key_gen.name () in
+  let start c _random _time _clock _mclock stack http resolver conduit zap management info =
+    let hostname = Key_gen.name ()
+    and syslog = Key_gen.syslog ()
+    and monitor = Key_gen.monitor ()
+    in
+    if Ipaddr.V4.compare syslog Ipaddr.V4.unspecified = 0 then
+      Logs.warn (fun m -> m "no syslog specified, dumping on stdout")
+    else
+      Logs.set_reporter (Syslog.create c management syslog ~hostname ());
+    if Ipaddr.V4.compare monitor Ipaddr.V4.unspecified = 0 then
+      Logs.warn (fun m -> m "no monitor specified, not outputting statistics")
+    else
+      Monitoring.create ~hostname monitor management;
+    List.iter (fun (p, v) -> Logs.app (fun m -> m "used package: %s %s" p v))
+      info.Mirage_info.packages;
     let init_http port config store =
       Server_log.info (fun f -> f "listening on %d/HTTP" port);
       http (`TCP port) @@ serve zap @@ Webdav_server.dispatch config store

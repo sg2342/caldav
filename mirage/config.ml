@@ -52,6 +52,14 @@ let key_seed =
   let doc = Key.Arg.info ~doc:"certificate key seed" ["key-seed"] in
   Key.(create "key-seed" Arg.(required string doc))
 
+let monitor =
+  let doc = Key.Arg.info ~doc:"monitor host IP" ["monitor"] in
+  Key.(create "monitor" Arg.(opt ipv4_address Ipaddr.V4.unspecified doc))
+
+let syslog =
+  let doc = Key.Arg.info ~doc:"syslog host IP" ["syslog"] in
+  Key.(create "syslog" Arg.(opt ipv4_address Ipaddr.V4.unspecified doc))
+
 let name =
   let doc = Key.Arg.info ~doc:"Name of the unikernel" ["name"] in
   Key.(create "name" Arg.(opt string "calendar.robur.coop" doc))
@@ -59,6 +67,8 @@ let name =
 let apple_testable =
   let doc = Key.Arg.info ~doc:"Configure the server to use with Apple CCS CalDAVtester." [ "apple-testable" ] in
   Key.(create "apple_testable" Arg.(flag doc))
+
+let management_stack = generic_stackv4 ~group:"management" (netif ~group:"management" "management")
 
 let main =
   let direct_dependencies = [
@@ -68,6 +78,8 @@ let main =
     package "irmin-mirage-git" ;
     package "irmin-mem" ;
     package ~sublibs:["mirage"] "dns-certify";
+    package ~sublibs:["mirage"] "logs-syslog";
+    package "monitoring-experiments";
   ] in
   let keys =
     [ Key.abstract seed ; Key.abstract authenticator ;
@@ -75,12 +87,12 @@ let main =
       Key.abstract admin_password ; Key.abstract remote ;
       Key.abstract tofu ; Key.abstract dns_key ; Key.abstract dns_server ;
       Key.abstract dns_port ; Key.abstract key_seed ;
-      Key.abstract name ;
+      Key.abstract name ; Key.abstract syslog ; Key.abstract monitor ;
       Key.abstract apple_testable ]
   in
   foreign
-    ~packages:direct_dependencies ~keys
-    "Unikernel.Main" (random @-> time @-> pclock @-> mclock @-> stackv4 @-> http @-> resolver @-> conduit @-> kv_ro @-> job)
+    ~deps:[ abstract app_info ] ~packages:direct_dependencies ~keys
+    "Unikernel.Main" (console @-> random @-> time @-> pclock @-> mclock @-> stackv4 @-> http @-> resolver @-> conduit @-> kv_ro @-> stackv4 @-> job)
 
 let () =
-  register "caldav" [main $ default_random $ default_time $ default_posix_clock $ default_monotonic_clock $ net $ http_srv $ resolver_dns net $ conduit_direct ~tls:true net $ zap ]
+  register "caldav" [main $ default_console $ default_random $ default_time $ default_posix_clock $ default_monotonic_clock $ net $ http_srv $ resolver_dns net $ conduit_direct ~tls:true net $ zap $ management_stack ]
