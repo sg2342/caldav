@@ -1,7 +1,5 @@
 open Mirage
 
-let net = generic_stackv4 default_network
-
 let seed =
   let doc = Key.Arg.info ~doc:"Seed for the ssh private key." ["seed"] in
   Key.(create "seed" Arg.(opt string "" doc))
@@ -9,9 +7,6 @@ let seed =
 let authenticator =
   let doc = Key.Arg.info ~doc:"Authenticator for SSH." ["authenticator"] in
   Key.(create "authenticator" Arg.(opt string "" doc))
-
-(* set ~tls to false to get a plain-http server *)
-let http_srv = cohttp_server @@ conduit_direct ~tls:true net
 
 (* TODO: make it possible to enable and disable schemes without providing a port *)
 let http_port =
@@ -69,6 +64,10 @@ let apple_testable =
   Key.(create "apple_testable" Arg.(flag doc))
 
 let management_stack = generic_stackv4 ~group:"management" (netif ~group:"management" "management")
+let service_stack = generic_stackv4 (netif ~group:"as250" "as250")
+
+(* set ~tls to false to get a plain-http server *)
+let http_srv = cohttp_server @@ conduit_direct ~tls:true service_stack
 
 let main =
   let direct_dependencies = [
@@ -95,4 +94,4 @@ let main =
     "Unikernel.Main" (console @-> random @-> time @-> pclock @-> mclock @-> stackv4 @-> http @-> resolver @-> conduit @-> kv_ro @-> stackv4 @-> job)
 
 let () =
-  register "caldav" [main $ default_console $ default_random $ default_time $ default_posix_clock $ default_monotonic_clock $ net $ http_srv $ resolver_dns net $ conduit_direct ~tls:true net $ zap $ management_stack ]
+  register "caldav" [main $ default_console $ default_random $ default_time $ default_posix_clock $ default_monotonic_clock $ service_stack $ http_srv $ resolver_dns service_stack $ conduit_direct ~tls:true service_stack $ zap $ management_stack ]
