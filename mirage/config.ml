@@ -22,7 +22,6 @@ let https_port =
   let doc = Key.Arg.info ~doc:"Listening HTTPS port." ["https"] ~docv:"PORT" in
   Key.(create "https_port" Arg.(opt (some int) None doc))
 
-let certs = generic_kv_ro ~key:Key.(value @@ kv_ro ()) "tls"
 let zap = generic_kv_ro ~key:Key.(value @@ kv_ro ()) "caldavzap"
 
 let admin_password =
@@ -37,13 +36,25 @@ let tofu =
   let doc = Key.Arg.info ~doc:"If a user does not exist, create them and give them a new calendar." [ "tofu" ] in
   Key.(create "tofu" Arg.(flag doc))
 
-let hostname =
-  let doc = Key.Arg.info ~doc:"Hostname to use." [ "host" ] ~docv:"STRING" in
-  Key.(create "hostname" Arg.(required string doc))
+let dns_key =
+  let doc = Key.Arg.info ~doc:"nsupdate key (name:type:value,...)" ["dns-key"] in
+  Key.(create "dns-key" Arg.(required string doc))
 
-let monitor =
-  let doc = Key.Arg.info ~doc:"Hostname to use for monitoring." [ "monitor" ] ~docv:"STRING" in
-  Key.(create "monitor" Arg.(opt (some string) None doc))
+let dns_server =
+  let doc = Key.Arg.info ~doc:"dns server IP" ["dns-server"] in
+  Key.(create "dns-server" Arg.(required ipv4_address doc))
+
+let dns_port =
+  let doc = Key.Arg.info ~doc:"dns server port" ["dns-port"] in
+  Key.(create "dns-port" Arg.(opt int 53 doc))
+
+let key_seed =
+  let doc = Key.Arg.info ~doc:"certificate key seed" ["key-seed"] in
+  Key.(create "key-seed" Arg.(required string doc))
+
+let name =
+  let doc = Key.Arg.info ~doc:"Name of the unikernel" ["name"] in
+  Key.(create "name" Arg.(opt string "calendar.robur.coop" doc))
 
 let apple_testable =
   let doc = Key.Arg.info ~doc:"Configure the server to use with Apple CCS CalDAVtester." [ "apple-testable" ] in
@@ -56,17 +67,20 @@ let main =
     package ~min:"0.1.2" "icalendar" ;
     package "irmin-mirage-git" ;
     package "irmin-mem" ;
+    package ~sublibs:["mirage"] "dns-certify";
   ] in
   let keys =
     [ Key.abstract seed ; Key.abstract authenticator ;
       Key.abstract http_port ; Key.abstract https_port ;
       Key.abstract admin_password ; Key.abstract remote ;
-      Key.abstract tofu ; Key.abstract hostname ;
-      Key.abstract monitor ; Key.abstract apple_testable ]
+      Key.abstract tofu ; Key.abstract dns_key ; Key.abstract dns_server ;
+      Key.abstract dns_port ; Key.abstract key_seed ;
+      Key.abstract name ;
+      Key.abstract apple_testable ]
   in
   foreign
     ~packages:direct_dependencies ~keys
-    "Unikernel.Main" (random @-> pclock @-> mclock @-> kv_ro @-> http @-> resolver @-> conduit @-> kv_ro @-> job)
+    "Unikernel.Main" (random @-> time @-> pclock @-> mclock @-> stackv4 @-> http @-> resolver @-> conduit @-> kv_ro @-> job)
 
 let () =
-  register "caldav" [main $ default_random $ default_posix_clock $ default_monotonic_clock $ certs $ http_srv $ resolver_dns net $ conduit_direct ~tls:true net $ zap ]
+  register "caldav" [main $ default_random $ default_time $ default_posix_clock $ default_monotonic_clock $ net $ http_srv $ resolver_dns net $ conduit_direct ~tls:true net $ zap ]

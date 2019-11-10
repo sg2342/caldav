@@ -9,20 +9,11 @@ module Server_log = (val Logs.src_log server_src : Logs.LOG)
 let access_src = Logs.Src.create "http.access" ~doc:"HTTP server access log"
 module Access_log = (val Logs.src_log access_src : Logs.LOG)
 
-module Main (R : Mirage_random.S) (Clock: Mirage_clock.PCLOCK) (Mclock: Mirage_clock.MCLOCK) (KEYS: Mirage_kv.RO) (S: HTTP) (Resolver : Resolver_lwt.S) (Conduit : Conduit_mirage.S) (Zap : Mirage_kv.RO) = struct
-  module X509 = Tls_mirage.X509(KEYS)(Clock)
+module Main (R : Mirage_random.S) (T : Mirage_time.S) (Clock: Mirage_clock.PCLOCK) (Mclock: Mirage_clock.MCLOCK) (Stack : Mirage_stack.V4) (S: HTTP) (Resolver : Resolver_lwt.S) (Conduit : Conduit_mirage.S) (Zap : Mirage_kv.RO) = struct
   module Store = Irmin_mirage_git.KV_RW(Irmin_git.Mem)(Clock)
   module Dav_fs = Caldav.Webdav_fs.Make(Store)
   module Dav = Caldav.Webdav_api.Make(R)(Clock)(Dav_fs)
   module Webdav_server = Caldav.Webdav_server.Make(R)(Clock)(Dav_fs)(S)
-
-  let tls_init kv =
-    Lwt.catch (fun () ->
-        X509.certificate kv `Default >|= fun cert ->
-        Tls.Config.server ~certificates:(`Single cert) ())
-      (function
-        | Failure _ -> Lwt.fail_with "Could not find server.pem and server.key in the <working directory>/tls."
-        | e -> Lwt.fail e)
 
   let ssh_config () =
     match Astring.String.cut ~sep:"://" (Key_gen.remote ()) with
@@ -58,16 +49,26 @@ module Main (R : Mirage_random.S) (Clock: Mirage_clock.PCLOCK) (Mclock: Mirage_c
     in
     S.make ~conn_closed ~callback ()
 
-  let start _random _clock _mclock keys http resolver conduit zap =
+  module D = Dns_certify_mirage.Make(R)(Clock)(T)(Stack)
+
+  let start _random _time _clock _mclock stack http resolver conduit zap =
+    let hostname = Key_gen.name () in
     let init_http port config store =
       Server_log.info (fun f -> f "listening on %d/HTTP" port);
       http (`TCP port) @@ serve zap @@ Webdav_server.dispatch config store
     in
     let init_https port config store =
-      tls_init keys >>= fun tls_config ->
-      Server_log.info (fun f -> f "listening on %d/HTTPS" port);
-      let tls = `TLS (tls_config, `TCP port) in
-      http tls @@ serve zap @@ Webdav_server.dispatch config store
+      let hostname = Domain_name.(hostname |> of_string_exn |> host_exn) in
+      D.retrieve_certificate ~ca:`Production
+        stack ~dns_key:(Key_gen.dns_key ())
+        ~hostname ~key_seed:(Key_gen.key_seed ())
+        (Key_gen.dns_server ()) (Key_gen.dns_port ()) >>= function
+      | Error (`Msg m) -> Lwt.fail_with m
+      | Ok certificates ->
+        let tls_config = Tls.Config.server ~certificates () in
+        Server_log.info (fun f -> f "listening on %d/HTTPS" port);
+        let tls = `TLS (tls_config, `TCP port) in
+        http tls @@ serve zap @@ Webdav_server.dispatch config store
     in
     let config host =
       let do_trust_on_first_use = Key_gen.tofu () in
@@ -85,7 +86,6 @@ module Main (R : Mirage_random.S) (Clock: Mirage_clock.PCLOCK) (Mclock: Mirage_c
           (Key_gen.remote ()) >>= fun store ->
         Dav.connect store config admin_pass
     in
-    let hostname = Key_gen.hostname () in
     match Key_gen.http_port (), Key_gen.https_port () with
     | None, None ->
       Logs.err (fun m -> m "no port provided for neither HTTP nor HTTPS, exiting") ;
