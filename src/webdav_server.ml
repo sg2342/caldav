@@ -11,6 +11,39 @@ module Access_log = (val Logs.src_log access_src : Logs.LOG)
 let response_time_src = Logs.Src.create "http.time" ~doc:"HTTP request response time"
 module Time_log = (val Logs.src_log response_time_src : Logs.LOG)
 
+let create ~f =
+  let data : (string, int) Hashtbl.t = Hashtbl.create 7 in
+  (fun x ->
+     let key = f x in
+     let cur = match Hashtbl.find_opt data key with
+       | None -> 0
+       | Some x -> x
+     in
+     Hashtbl.replace data key (succ cur)),
+  (fun () ->
+     let data, total =
+       Hashtbl.fold (fun key value (acc, total) ->
+           (Metrics.uint key value :: acc), value + total)
+         data ([], 0)
+     in
+     Metrics.uint "total" total :: data)
+
+let counter_metrics ~f name =
+  let open Metrics in
+  let doc = "Counter metrics" in
+  let incr, get = create ~f in
+  let data thing = incr thing; Data.v (get ()) in
+  Src.v ~doc ~tags:Metrics.Tags.[] ~data name
+
+let http_status =
+  let f code = Cohttp.Code.code_of_status code |> string_of_int in
+  let src = counter_metrics ~f "http_response" in
+  (fun r -> Metrics.add src (fun x -> x) (fun d -> d r))
+
+let http_uri =
+  let src = counter_metrics ~f:(fun x -> x) "http_uri" in
+  (fun r -> Metrics.add src (fun x -> x) (fun d -> d r))
+
 let sane username =
   username <> "" && Astring.String.for_all Astring.Char.Ascii.is_alphanum username
 
@@ -524,7 +557,7 @@ module Make (R : Mirage_random.S) (Clock : Mirage_clock.PCLOCK) (Fs : Webdav_fs.
      * 404 [`Not_found]. *)
     let now () = Ptime.v (Clock.now_d_ps ()) in
     let start = now () in
-    Access_log.info (fun m -> m "request %s %s"
+    Access_log.debug (fun m -> m "request %s %s"
                         (Cohttp.Code.string_of_method (Cohttp.Request.meth request))
                         (Cohttp.Request.resource request));
     Access_log.debug (fun m -> m "request headers %s"
@@ -537,14 +570,14 @@ module Make (R : Mirage_random.S) (Clock : Mirage_clock.PCLOCK) (Fs : Webdav_fs.
     >>= fun (status, headers, body, path) ->
     let stop = now () in
     let diff = Ptime.diff stop start in
-    Access_log.info (fun m -> m "response %d response time %a"
+    Access_log.debug (fun m -> m "response %d response time %a"
                         (Cohttp.Code.code_of_status status)
                         Ptime.Span.pp diff) ;
     Access_log.debug (fun m -> m "%s %s path: %s"
                          (Cohttp.Code.string_of_method (Cohttp.Request.meth request))
                          (Uri.path (Cohttp.Request.uri request))
                          (Astring.String.concat ~sep:", " path)) ;
-    Time_log.info (fun m -> m "%s\t%s\t%d\t%f" 
+    Time_log.debug (fun m -> m "%s\t%s\t%d\t%f"
                          (Cohttp.Code.string_of_method (Cohttp.Request.meth request))
                          (Cohttp.Request.resource request)
                          (Cohttp.Code.code_of_status status)
@@ -552,5 +585,7 @@ module Make (R : Mirage_random.S) (Clock : Mirage_clock.PCLOCK) (Fs : Webdav_fs.
     (*      Access_log.debug (fun m -> m "body: %s"
                            (match body with `String s -> s | `Empty -> "empty" | _ -> "unknown") ) ; *)
     (* Finally, send the response to the client *)
+    http_status status;
+    http_uri request.Cohttp.Request.resource;
     S.respond ~headers ~body ~status ()
 end
