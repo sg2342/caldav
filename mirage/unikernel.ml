@@ -35,13 +35,28 @@ module Main (C : Mirage_console.S) (R : Mirage_random.S) (T : Mirage_time.S) (Cl
     let headers = Cohttp.Header.init_with "location" (Uri.to_string new_uri) in
     S.respond ~headers ~status:`Moved_permanently ~body:`Empty ()
 
+  let content_type path = match Filename.extension path with
+    | ".css" -> "text/css"
+    | ".js" -> "application/javascript"
+    | ".svg" -> "image/svg+xml"
+    | ".html" -> "text/html"
+    | ".gif" -> "image/gif"
+    | ".ttf" -> "application/x-font-ttf"
+    | ".woff" -> "application/font-woff"
+    | ".eot" -> "application/vnd.ms-fontobject"
+    | _ -> "text/plain"
+
   let serve data callback =
     let callback (_, cid) request body =
       let cid = Cohttp.Connection.to_string cid in
       let uri = Cohttp.Request.uri request in
       Access_log.debug (fun f -> f "[%s] serving %s." cid (Uri.to_string uri));
       Zap.get data (Mirage_kv.Key.v (Uri.path uri)) >>= function
-      | Ok data -> S.respond ~status:`OK ~body:(`String data) ()
+      | Ok data ->
+        let headers =
+          Uri.path uri |> content_type |> Cohttp.Header.init_with "content-type"
+        in
+        S.respond ~headers ~status:`OK ~body:(`String data) ()
       | _ -> callback request body
     and conn_closed (_,cid) =
       let cid = Cohttp.Connection.to_string cid in
